@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>🌿 Eco Route Predictor</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+<style>
+body { margin:0; font-family:'Segoe UI', sans-serif; background: linear-gradient(to right, #a8e063, #56ab2f); display:flex; flex-direction:column; align-items:center; min-height:100vh; color:#333; }
+h1 { margin:20px 0; font-size:2.5rem; color:white; text-shadow:2px 2px 5px #000; }
+.container { background:white; padding:20px; border-radius:20px; box-shadow:0 8px 20px rgba(0,0,0,0.3); width:90%; max-width:500px; display:flex; flex-direction:column; align-items:center; }
+input { margin:10px 0; padding:10px; width:80%; border-radius:10px; border:1px solid #ccc; font-size:1rem; }
+#predictBtn { padding:12px 20px; background-color:green; color:white; border:none; border-radius:12px; font-size:1rem; cursor:pointer; margin-top:10px; transition:0.3s; }
+#predictBtn:hover:not(:disabled) { background-color:#005500; }
+#predictBtn:disabled { background-color:gray; cursor:not-allowed; }
+.result { margin-top:15px; padding:15px; border-radius:15px; width:80%; text-align:center; font-size:1.2rem; font-weight:bold; color:white; background-color:green; transition:0.3s; box-shadow:0 4px 15px rgba(0,0,0,0.3); }
+#map { height:400px; width:90%; margin-top:20px; border-radius:15px; box-shadow:0 6px 20px rgba(0,0,0,0.4); }
+.info { font-size:0.9rem; margin-bottom:5px; color:#333; }
+</style>
+</head>
+<body>
+
+<h1>🌿 Eco Route Predictor</h1>
+
+<div class="container">
+    <div class="info">Enter start and end addresses</div>
+    <input type="text" id="startAddress" placeholder="Start Location">
+    <input type="text" id="endAddress" placeholder="End Location">
+    <button id="setRouteBtn">Set Route</button>
+    <div>Distance: <span id="distance">0</span> km</div>
+    <input type="number" id="speed" placeholder="Speed km/h">
+    <input type="number" id="traffic" placeholder="Traffic 1-10">
+    <button id="predictBtn" disabled onclick="predict()">Predict Eco Score</button>
+    <div class="result" id="result" style="display:none;"></div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.min.js"></script>
+
+<script>
+var map = L.map('map').setView([20.5937,78.9629],5);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+
+var startMarker = null, endMarker = null;
+var routingControl = null;
+var distance = 0;
+var predictBtn = document.getElementById('predictBtn');
+
+function updateButtonState() {
+    const speed = document.getElementById("speed").value;
+    const traffic = document.getElementById("traffic").value;
+    if(startMarker && endMarker && speed && traffic) predictBtn.disabled=false;
+    else predictBtn.disabled=true;
+}
+
+// Geocoding function using Nominatim
+async function geocode(address) {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if(data.length==0) throw "Address not found!";
+    return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+}
+
+// Set route from addresses
+document.getElementById("setRouteBtn").addEventListener('click', async ()=>{
+    const startAddr = document.getElementById("startAddress").value;
+    const endAddr = document.getElementById("endAddress").value;
+    if(!startAddr || !endAddr){ alert("Enter both addresses!"); return; }
+
+    try{
+        const startLatLng = await geocode(startAddr);
+        const endLatLng = await geocode(endAddr);
+
+        if(startMarker) map.removeLayer(startMarker);
+        if(endMarker) map.removeLayer(endMarker);
+
+        startMarker = L.marker(startLatLng,{draggable:true}).addTo(map).bindPopup("Start").openPopup();
+        endMarker = L.marker(endLatLng,{draggable:true}).addTo(map).bindPopup("End");
+
+        if(routingControl) routingControl.remove();
+        routingControl = L.Routing.control({
+            waypoints:[startMarker.getLatLng(), endMarker.getLatLng()],
+            lineOptions:{styles:[{color:'green',weight:5}]},
+            createMarker:()=>null,
+            addWaypoints:false,
+            routeWhileDragging:true
+        }).addTo(map);
+
+        routingControl.on('routesfound', function(e){
+            var route = e.routes[0];
+            distance = (route.summary.totalDistance/1000).toFixed(2);
+            document.getElementById('distance').innerText = distance;
+            updateButtonState();
+        });
+
+        startMarker.on('dragend',()=>{ routingControl.setWaypoints([startMarker.getLatLng(), endMarker.getLatLng()]); });
+        endMarker.on('dragend',()=>{ routingControl.setWaypoints([startMarker.getLatLng(), endMarker.getLatLng()]); });
+
+        map.fitBounds([startLatLng,endLatLng]);
+
+    }catch(err){
+        alert("Error: "+err);
+    }
+});
+
+document.getElementById("speed").addEventListener('input', updateButtonState);
+document.getElementById("traffic").addEventListener('input', updateButtonState);
+
+function predict(){
+    const speed = parseFloat(document.getElementById("speed").value);
+    const traffic = parseFloat(document.getElementById("traffic").value);
+
+    fetch("http://127.0.0.1:5000/predict",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({distance:parseFloat(distance), speed, traffic})
+    })
+    .then(res=>res.json())
+    .then(data=>{
+        const resultDiv = document.getElementById("result");
+        resultDiv.style.display="block";
+        resultDiv.innerHTML = "Eco Score: "+data.eco_score;
+        if(traffic<=3) resultDiv.style.backgroundColor='green';
+        else if(traffic<=7) resultDiv.style.backgroundColor='orange';
+        else resultDiv.style.backgroundColor='red';
+    })
+    .catch(err=>alert("Error connecting to server!"));
+}
+</script>
+
+</body>
+</html>
